@@ -1,0 +1,350 @@
+<head>
+	<meta http-equiv="x-ua-compatible" content="IE=edge" /> <!-- Gradients -->
+	<title>Music sleep timer</title>
+	<style>
+		body { background: linear-gradient(#000044, black 100%);
+									overflow:			hidden;		}
+		div						{	font-family:		sans-serif;	}
+		div.label				{	color:				white;		}
+		html					{	min-height:			100%;		}
+		button, input, select	{	background-color:	lightgray;	}
+		:disabled				{	background-color:	darkgray;	}
+		#divStatusBar			{	background:			black;
+									position:			absolute;
+									bottom:				0px;
+									left:				0px;
+									width:				105%;
+									/* 100% doesn't reach the right margin */
+									border-top-width:	0px;
+									border-left-width:	0px;
+									border-right-width:	0px;
+									border-bottom-width:0px;
+									border-style:		groove;		}
+	</style>
+</head>
+
+<body onLoad="onLoad()" oncontextmenu="return false">
+	<table style="width: 100%;">
+		<tr>
+			<td style="width: 50%;">
+				<div class="label">Sleep:</div>
+			</td>
+			<td style="width: 50%;">
+				<div class="label" id="wakeField">Wake:</div>
+			</td>
+		</tr>
+		<tr>
+			<td>
+				<select style="width: 100%;" name="selOffTime">
+					<option value="-1">Never</option>
+					<option value="0">Immediately</option>
+					<option value="0.25">15 seconds</option>
+					<option value="1">1 minute</option>
+					<option value="5">5 minutes</option>
+					<option value="10">10 minutes</option>
+					<option value="15">15 minutes</option>
+					<option value="20">20 minutes</option>
+				</select>
+			</td>
+			<td>
+				<input type="text" style="width: 100%;" value="6:30 AM"
+					onChange="updateOnTimerLabel()" name="txtOnTime"/>
+			</td>
+		</tr>
+	</table>
+	<br/>
+
+	<div class="label">On wake, play playlist or file:</div>
+
+	<!-- File input is un-style-able; this might be of interest: -->
+	<!-- http://jsfiddle.net/gabrieleromanato/mxq9R/ -->
+	<input type="file" style="width: 100%;" name="fileToPlay"></input>
+	<br/>
+
+	<table style="width: 100%;">
+		<tr>
+			<td style="width: 50%;">
+				<button style="width: 100%;" onClick="start()"
+					name="btnStart">Start</button>
+			</td>
+			<td style="width: 50%;">
+				<button style="width: 100%;" onClick="cancel()"
+					name="btnCancel">Cancel</button>
+			</td>
+		</tr>
+	</table>
+	<br/>
+
+	<div id="divStatusBar"
+		style="color: white; background-color: black; font-weight: bold;">
+		Loading...</div>
+</body>
+
+<script>
+	var offTime = null;
+	var onTime = null;
+	var idClock = null;
+	var idFadeOutWrapper = null;
+	var idFadeOut = null;
+	var idFadeInWrapper = null;
+	var idFadeIn = null;
+	var sh = null;
+	var fso = null;
+
+	const VK_VOLUME_DOWN = 0xae;
+	const VK_VOLUME_UP = 0xaf;
+	const VK_STOP = 0xb2;
+
+	// Initialize window
+	function onLoad() {
+		window.resizeTo(540, 200);
+
+		sh = new ActiveXObject('WScript.Shell')
+		fso = new ActiveXObject('Scripting.FileSystemObject')
+
+		updateOnTimerLabel();
+		idClock = setInterval("updateStatus()", 250);
+
+		for (min=30; min<240; min+=15) {
+			opt = document.createElement('OPTION');
+			if (min == 60) {
+				opt.textContent = '1 hour';
+			} else if (min > 60) {
+				opt.textContent = (min/60).toString() + ' hours';
+			} else {
+				opt.textContent = min.toString() + ' minutes';
+			}
+			opt.value = min.toString();
+			selOffTime.add(opt);
+		}
+
+		selOffTime.value = 90;
+	}
+
+	// Parse time string (e.g. '6:30 AM') into Date() object representing the
+	// specified time on today's date.  Returns null if the time string is
+	// invalid.
+	function parseTime(tm) {
+		// Inspired by:
+		// http://www.timlabonne.com/2013/07/parsing-a-time-string-with-javascr
+		// ipt/
+		c = tm.match(/^\s*(\d+):(\d\d)\s*([AP])[M]\s*$/i);
+		if (!c) {
+			return null;
+		}
+
+		h = parseInt(c[1], 10);
+		if (h == 12)
+		{
+			if (c[3].match(/a/i)) {
+				h = 0;
+			}
+		}
+		else if (c[3].match(/p/i)) {
+			h += 12;
+		}
+		m = parseInt(c[2], 10);
+
+		n = new Date();
+		d = new Date(n.getFullYear(), n.getMonth(), n.getDate(), h, m);
+
+		return d;
+	}
+
+	// Parse string time (e.g. 6:30 AM' into Date() object representing the
+	// specified time on today's date or tomorrow's, whichever one is soonest
+	// and in the future.  Returns null if the time string is invalid.
+	function parseTimeTodayTomorrow(tm) {
+		d = parseTime(tm);
+		if (!d)							{	return null;				}
+		if (d.getTime() < Date.now())	{	d.setDate(d.getDate() + 1);	}
+		return d;
+	}
+
+	// Accept a Date() object and report how many seconds will transpire before
+	// that time.
+	function secondsTillTime(d) {
+		return ((d.getTime() - Date.now()) / 1000);
+	}
+
+	// Accept a Date() object and format it as a time string for display
+	function formatTime(d) {
+		ampm = (d.getHours() < 12)? 'AM': 'PM';
+		h = d.getHours();
+		if (h == 0) h = 12;
+		m = ('00' + d.getMinutes()).slice(-2);
+		return h + ':' + m + ' ' + ampm;
+	}
+
+	// Accept a Date() object and format it as a date/time string for display
+	function formatDateTime(d) {
+		return 1+d.getMonth() + '/' + d.getDate() + '/' + d.getFullYear() +
+			' ' + formatTime(d);
+	}
+
+	// Update wake timer label indicating valid or disabled/invalid wake time
+	function updateOnTimerLabel() {
+		d = parseTimeTodayTomorrow(txtOnTime.value);
+		if (!d) {
+			wakeField.innerHTML = "Wake: disabled / invalid";
+		} else {
+			wakeField.innerHTML = 'Wake: ' + formatDateTime(d) + ' (valid)';
+		}
+	}
+
+	// Round to one decimal
+	function round1(n)				{	return Math.round(n*10)/10;		}
+
+	// Accept a number of seconds and return a formatted string indicating
+	// seconds, minutes, or hours represented by that duration.
+	function fuzzyTime(s)
+	{
+		r = null;
+		if (s < 60)					{	r = round1(s) + ' sec';			}
+		else if (s < 3600)			{	r = round1(s/60) + ' min';		}
+		else						{	r = round1(s/3600) + ' hrs';	}
+		return r;
+	}
+
+	// Update status bar either with the time or the status (if timers are in
+	// progress)
+	function updateStatus() {
+		msg = '';
+
+		if (offTime != null)
+		{
+			remainingSec = ((offTime.getTime() - Date.now()) / 1000);
+			if (remainingSec > 0)
+			{
+				msg = msg + 'Sleeping in ' + fuzzyTime(remainingSec) + '...  ';
+			}
+		}
+
+		if (onTime != null) {
+			remainingSec = ((onTime.getTime() - Date.now()) / 1000);
+			msg = msg + 'Waking ' + formatDateTime(onTime);
+			msg = msg + ' (in ' + fuzzyTime(remainingSec) + ')...';
+		}
+
+		if (msg == '') {
+			msg = 'Current time: ' + formatTime(new Date());
+		}
+
+		divStatusBar.innerHTML = msg;
+	}
+
+	// Start the sleep/wake timers specified
+	function start() {
+		d = parseTimeTodayTomorrow(txtOnTime.value);
+		if (d != null)
+		{
+			if (!fso.FileExists(fileToPlay.value)) {
+				alert('Enter a valid playlist or MP3 path');
+				return false;
+			}
+			else
+			{
+				onTimeSec = secondsTillTime(d);
+				if (onTimeSec) {
+					onTime = new Date(Date.now() + 1000 * onTimeSec);
+					idFadeInWrapper = setTimeout('fadeIn()', 1000 * onTimeSec);
+				}
+			}
+		}
+
+		selOffTime.disabled = txtOnTime.disabled = btnStart.disabled =
+			fileToPlay.disabled = true;
+
+		if (selOffTime.value == 0) {
+			setTimeout('fadeOut()', 1);
+		} else if (selOffTime.value > 0) {
+			offTimeSec = 60 * selOffTime.value;
+			offTime = new Date(Date.now() + 1000 * offTimeSec);
+			idFadeOutWrapper = setTimeout('fadeOut()', 1000 * offTimeSec);
+		}
+
+		return true;
+	}
+
+	// Cancel timers
+	function cancel() {
+		selOffTime.disabled = txtOnTime.disabled = btnStart.disabled =
+			fileToPlay.disabled = false;
+		offTime = onTime = null;
+		clearTimeout(idFadeOutWrapper);
+		clearInterval(idFadeOut);
+		clearTimeout(idFadeInWrapper);
+		clearInterval(idFadeIn);
+		divStatusBar.innerHTML = '';
+	}
+
+	// fadeOut() is the onset of the sleep timer.  fadeOut() is scheduled in
+	// the future on a one-time basis using setTimeout(), and when it is
+	// finally executed by that one-time event, it sets a repeat timer to
+	// execute nudgeDownWrapper() a certain number (nudgeCounter) of times.
+	function fadeOut() {
+		offTime = null;
+		nudgeCounter = 50;
+		idFadeOut = setInterval('nudgeDownWrapper()', 2000);
+		divStatusBar.innerHTML = 'Fading out...';
+	}
+
+	// fadeIn() is the complement of fadeOut(), and is called at the onset of
+	// the wake timer.  fadeIn() is scheduled in the future on a one-time basis
+	// using setTimeout(), and when it is finally executed by that one-time
+	// event, it starts the audio player by calling startMediaPlayer(), and it
+	// sets a repeat timer to execute nudgeUpWrapper() a certain number
+	// (nudgeCounter) of times.
+	function fadeIn() {
+		onTime = null;
+		divStatusBar.innerHTML = 'Fading in...';
+		startMediaPlayer();
+		nudgeCounter = 10; // (2x10 = 20, which is loud enough)
+		idFadeIn = setInterval('nudgeUpWrapper()', 10000);
+	}
+
+	// This function's job is to count the number of times it has been called,
+	// unschedule its subsequent calls when the threshold is reached, and
+	// terminate the music player at that time by calling stopAudio().
+	function nudgeDownWrapper() {
+		volumeDown();
+		if (--nudgeCounter == 0) {
+			clearTimeout(idFadeOut);
+			stopAudio();
+
+			// If there is no wake timer, reset the UI
+			if (idFadeInWrapper == null) {
+				cancel();
+			} else {
+				divStatusBar.innerHTML = 'Sleeping until startup...';
+			}
+		}
+	}
+
+	// Like its counterpart, this function's job is to count the number of
+	// times it has been called, unschedule its subsequent calls when the
+	// threshold is reached, and reset the UI to allow further use by calling
+	// cancel().
+	function nudgeUpWrapper() {
+		volumeUp();
+		if (--nudgeCounter == 0) {
+			clearTimeout(idFadeIn);
+			cancel();
+			divStatusBar.innerHTML = 'Sequence complete';
+		}
+	}
+
+	// Starts audio player
+	function startMediaPlayer() {
+		sh.Run('wmplayer.exe "' + fileToPlay.value + '"');
+	}
+
+	// Increases volume by sending keycode 0xaf
+	function volumeUp() { sh.SendKeys(String.fromCharCode(VK_VOLUME_UP)); }
+
+	// Decreases volume by sending keycode 0xae
+	function volumeDown() { sh.SendKeys(String.fromCharCode(VK_VOLUME_DOWN)); }
+
+	// Stops audio playback for compliant media players by sending keycode 0xb2
+	function stopAudio() { sh.SendKeys(String.fromCharCode(VK_STOP)); }
+</script>
